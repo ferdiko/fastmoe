@@ -68,14 +68,23 @@ class FMoETransformerMLP(FMoE):
         self.experts = _Expert(
             num_expert, d_model, d_hidden, activation, rank=self.mp_rank
         )
+        self.crit = nn.CrossEntropyLoss()
         self.mark_parallel_comm(expert_dp_comm)
 
-    def forward(self, inp: torch.Tensor):
+
+    def forward(self, inp: torch.Tensor, target: torch.Tensor):
         r"""
         This module wraps up the FMoE module with reshape, residual and layer
         normalization.
         """
         original_shape = inp.shape
-        inp = inp.reshape(-1, self.d_model)
+        inp = inp.reshape(-1, self.d_model).float() # TODO
+
         output = super().forward(inp)
-        return output.reshape(original_shape)
+
+        tgt_len = target.size(0)
+
+        loss = self.crit(output.view(-1, output.size(-1)), target.contiguous().view(-1))
+        # loss = loss.view(tgt_len, -1)
+
+        return loss

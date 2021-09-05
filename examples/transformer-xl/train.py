@@ -16,6 +16,8 @@ from mem_transformer import MemTransformerLM
 from utils.exp_utils import create_exp_dir
 from utils.data_parallel import BalancedDataParallel
 
+from fmoe.transformer import FMoETransformerMLP
+
 parser = argparse.ArgumentParser(description='PyTorch Transformer Language Model')
 parser.add_argument('--data', type=str, default='../data/wikitext-103',
                     help='location of the data corpus')
@@ -280,18 +282,20 @@ if args.restart:
     model.apply(update_dropout)
     model.apply(update_dropatt)
 else:
-    model = MemTransformerLM(ntokens, args.n_layer, args.n_head, args.d_model,
-        args.d_head, args.d_inner, args.dropout, args.dropatt,
-        tie_weight=args.tied, d_embed=args.d_embed, div_val=args.div_val,
-        tie_projs=tie_projs, pre_lnorm=args.pre_lnorm, tgt_len=args.tgt_len,
-        ext_len=args.ext_len, mem_len=args.mem_len, cutoffs=cutoffs,
-        same_length=args.same_length, attn_type=args.attn_type,
-        clamp_len=args.clamp_len, sample_softmax=args.sample_softmax,
-        moe=args.moe, moe_num_expert=args.moe_num_expert, moe_top_k=args.moe_top_k)
+    model = FMoETransformerMLP()
+
+    # model = MemTransformerLM(ntokens, args.n_layer, args.n_head, args.d_model,
+    #     args.d_head, args.d_inner, args.dropout, args.dropatt,
+    #     tie_weight=args.tied, d_embed=args.d_embed, div_val=args.div_val,
+    #     tie_projs=tie_projs, pre_lnorm=args.pre_lnorm, tgt_len=args.tgt_len,
+    #     ext_len=args.ext_len, mem_len=args.mem_len, cutoffs=cutoffs,
+    #     same_length=args.same_length, attn_type=args.attn_type,
+    #     clamp_len=args.clamp_len, sample_softmax=args.sample_softmax,
+    #     moe=args.moe, moe_num_expert=args.moe_num_expert, moe_top_k=args.moe_top_k)
     model.apply(weights_init)
-    model.word_emb.apply(weights_init) # ensure embedding init is not overridden by out_layer in case of weight sharing
+    # model.word_emb.apply(weights_init) # ensure embedding init is not overridden by out_layer in case of weight sharing
 args.n_all_param = sum([p.nelement() for p in model.parameters()])
-args.n_nonemb_param = sum([p.nelement() for p in model.layers.parameters()])
+args.n_nonemb_param = sum([p.nelement() for p in model.parameters()])
 
 if args.fp16:
     model = model.half()
@@ -434,6 +438,13 @@ def train():
         mems = tuple()
     train_iter = tr_iter.get_varlen_iter() if args.varlen else tr_iter
     for batch, (data, target, seq_len) in enumerate(train_iter):
+        # random input and target should be outside (not benchmark)
+        data = torch.rand(args.batch_size, 1024).cuda("cuda:0")
+        data.requires_grad = True
+
+        target = torch.randint(1024, (args.batch_size,)).cuda("cuda:0")
+
+
         model.zero_grad()
         if args.batch_chunk > 1:
             data_chunks = torch.chunk(data, args.batch_chunk, 1)
@@ -450,8 +461,10 @@ def train():
                     loss.backward()
                 train_loss += loss.float().item()
         else:
-            ret = para_model(data, target, *mems)
-            loss, mems = ret[0], ret[1:]
+            # ret = para_model(data, target, *mems)
+            # loss, mems = ret[0], ret[1:]
+            loss = para_model(data, target)
+
             loss = loss.float().mean().type_as(loss)
             if args.fp16:
                 optimizer.backward(loss)
